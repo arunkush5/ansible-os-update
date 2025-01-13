@@ -1,9 +1,4 @@
 ---
-- name: Upgrade RHEL 7 to RHEL 8 or RHEL 8 to RHEL 9 using Leapp
-  hosts: all
-  become: yes
-  tasks:
-
     - name: Install required packages including leapp utility
       yum:
         name:
@@ -11,7 +6,7 @@
           - leapp
           - leapp-repository
         state: latest
-      when: ansible_os_family == "RedHat"
+      when: ansible_os_family == "RedHat" and ansible_distribution_major_version == "7"
 
     - name: Update the system packages to the latest version
       yum:
@@ -22,27 +17,22 @@
       notify:
         - log yum output to file
 
-    - name: Check if system is running in a BrandZ zone
-      command: uname -v
-      register: not_in_zone
-      changed_when: "'BrandZ virtual linux' not in not_in_zone.stdout"
-
-    - name: Run Leapp pre-upgrade check
+    - name: Run Leapp pre-upgrade check (RHEL 7 to RHEL 8)
       command: leapp upgrade --check
       register: leapp_pre_upgrade_check
       failed_when: "'There are no pre-upgrade issues' not in leapp_pre_upgrade_check.stdout"
-      when: ansible_os_family == "RedHat"
+      when: ansible_os_family == "RedHat" and ansible_distribution_major_version == "7"
 
     - name: Handle if there are pre-upgrade issues
       debug:
         msg: "There are pre-upgrade issues identified. Please address them before proceeding."
       when: "'There are no pre-upgrade issues' not in leapp_pre_upgrade_check.stdout"
 
-    - name: Perform the upgrade using Leapp
+    - name: Perform the upgrade using Leapp (RHEL 7 to RHEL 8)
       command: leapp upgrade
       register: leapp_upgrade
       failed_when: leapp_upgrade.rc != 0
-      when: ansible_os_family == "RedHat" and "'There are no pre-upgrade issues' in leapp_pre_upgrade_check.stdout"
+      when: ansible_os_family == "RedHat" and ansible_distribution_major_version == "7" and "'There are no pre-upgrade issues' in leapp_pre_upgrade_check.stdout"
 
     - name: Notify user to reboot the system after the upgrade
       debug:
@@ -55,7 +45,7 @@
         test_command: uptime
       when: leapp_upgrade.rc == 0
 
-    - name: Post-upgrade cleanup - Remove old kernels (keep "{{ old_kernel_history_count }}")"
+    - name: Post-upgrade cleanup - Remove old kernels (keep "{{ old_kernel_history_count }}")
       command: package-cleanup --oldkernels --count="{{ old_kernel_history_count }}" -y
       register: cleanup_output
       changed_when: "'No old kernels to remove' not in cleanup_output.stdout"
@@ -88,7 +78,7 @@
       register: needs_restarting_services
       changed_when: needs_restarting_services.rc == 1
       failed_when: needs_restarting_services.rc != 0 and needs_restarting_services.rc != 1
-      when: not_in_zone.changed
+      when: leapp_upgrade.rc == 0
       notify:
         - reboot
 
