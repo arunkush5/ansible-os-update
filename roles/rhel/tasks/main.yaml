@@ -1,0 +1,110 @@
+---
+- name: Upgrade RHEL 7 to RHEL 8 or RHEL 8 to RHEL 9 using Leapp
+  hosts: all
+  become: yes
+  tasks:
+
+    - name: Install required packages including leapp utility
+      yum:
+        name:
+          - yum-utils
+          - leapp
+          - leapp-repository
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Update the system packages to the latest version
+      yum:
+        name: '*'
+        state: latest
+      register: output
+      when: ansible_os_family == "RedHat"
+      notify:
+        - log yum output to file
+
+    - name: Check if system is running in a BrandZ zone
+      command: uname -v
+      register: not_in_zone
+      changed_when: "'BrandZ virtual linux' not in not_in_zone.stdout"
+
+    - name: Run Leapp pre-upgrade check
+      command: leapp upgrade --check
+      register: leapp_pre_upgrade_check
+      failed_when: "'There are no pre-upgrade issues' not in leapp_pre_upgrade_check.stdout"
+      when: ansible_os_family == "RedHat"
+
+    - name: Handle if there are pre-upgrade issues
+      debug:
+        msg: "There are pre-upgrade issues identified. Please address them before proceeding."
+      when: "'There are no pre-upgrade issues' not in leapp_pre_upgrade_check.stdout"
+
+    - name: Perform the upgrade using Leapp
+      command: leapp upgrade
+      register: leapp_upgrade
+      failed_when: leapp_upgrade.rc != 0
+      when: ansible_os_family == "RedHat" and "'There are no pre-upgrade issues' in leapp_pre_upgrade_check.stdout"
+
+    - name: Notify user to reboot the system after the upgrade
+      debug:
+        msg: "System upgrade complete. Rebooting is required."
+      when: leapp_upgrade.rc == 0
+
+    - name: Reboot the system to complete the upgrade
+      reboot:
+        reboot_timeout: 600
+        test_command: uptime
+      when: leapp_upgrade.rc == 0
+
+    - name: Post-upgrade cleanup - Remove old kernels (keep "{{ old_kernel_history_count }}")"
+      command: package-cleanup --oldkernels --count="{{ old_kernel_history_count }}" -y
+      register: cleanup_output
+      changed_when: "'No old kernels to remove' not in cleanup_output.stdout"
+      when:
+        - cleanup_old_kernels
+        - leapp_upgrade.rc == 0
+
+    - name: Verify system version after upgrade
+      command: cat /etc/redhat-release
+      register: system_version
+      changed_when: false
+      when: leapp_upgrade.rc == 0
+
+    - name: Display system version after upgrade
+      debug:
+        msg: "System upgraded to {{ system_version.stdout }}"
+      when: leapp_upgrade.rc == 0
+
+    - name: Check if reboot is required after the upgrade
+      command: needs-restarting -r
+      register: needs_restarting
+      changed_when: needs_restarting.rc == 1
+      failed_when: needs_restarting.rc != 0 and needs_restarting.rc != 1
+      when: leapp_upgrade.rc == 0
+      notify:
+        - reboot
+
+    - name: Run needs-restarting -s to check for services that need restarting
+      command: needs-restarting -s
+      register: needs_restarting_services
+      changed_when: needs_restarting_services.rc == 1
+      failed_when: needs_restarting_services.rc != 0 and needs_restarting_services.rc != 1
+      when: not_in_zone.changed
+      notify:
+        - reboot
+
+    - meta: flush_handlers
+
+  handlers:
+    - name: reboot
+      reboot:
+        reboot_timeout: 600
+        test_command: uptime
+        pre_reboot_delay: 0
+        post_reboot_delay: 60
+      when: needs_restarting.rc == 1 or needs_restarting_services.rc == 1
+
+    - name: log yum output to file
+      copy:
+        content: "{{ output.stdout }}"
+        dest: "/var/log/yum_update_output.log"
+        mode: "0644"
